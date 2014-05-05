@@ -88,3 +88,53 @@ int get_rr_mem(char *rr) {
 	
 	return rmem;
 }
+
+/*
+ * ** Parses LSF's RR string and extracts scratch=XXXX
+ * ** WARNING: THIS RETURNS MB - MOST OTHER VALUES ARE IN KB
+ * */
+int get_rr_scratch(char *rr) {
+        char match[] = "scratch=";      /* prefix to search                         */
+        char *scr = NULL;           /* scratch buffer-pointer                   */
+        int rscr = -1;              /* return value -> requested scratch         */
+        int xoff = 0;               /* offset of first integer value after scratch= */
+        int slen = strlen(match);
+        int rlen = strlen(rr);
+        int i;
+
+
+        for(i=slen;i<rlen;i++) {
+                if(xoff == 0 && memcmp(&rr[i-slen], match, slen) == 0) {
+                        xoff = i;
+                }
+                else if(xoff && (rr[i] < '0' || rr[i] > '9')) {
+                        break;
+                }
+        }
+
+        if(xoff) { /* hit is between i <-> xoff */
+                if( (scr = malloc( 1+i-xoff )) != NULL &&
+                       (snprintf(scr, 1+i-xoff, "%s", &rr[xoff])) > 0 ) {
+                        rscr = atoi(scr);
+                }
+        }
+
+        if(scr != NULL)
+                free(scr);
+
+        return rscr;
+}
+
+/*
+ * ** Parses LSF's RR string and extracts if it has affinity
+ * */
+int has_affinity(char *rr) {
+        char match[] = "affinity";  /* prefix to search                         */
+        int raff = 0;              /* return value -> affinity setting         */
+
+        if(strstr(rr,match) != NULL)
+		raff = 1;
+
+        return raff;
+}
+

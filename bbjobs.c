@@ -6,7 +6,9 @@
 #include "bbjobs.h"
 #include "lsb_strings.h"
 
-#define USAGE "rinfo [-u username -r -a -s -d -p -P] [ JOBID1 ... ]"
+#define USAGE "rinfo [-u username -r -a -s -d -p -f -l -P] [ JOBID1 ... ]"
+
+int jaff,jlong;
 
 void xdie(char *msg) {
 	fprintf(stderr, "%s\n", msg);
@@ -21,10 +23,12 @@ int main(int argc, char **argv) {
 	int jobidx;
 	char *juser = NULL;
 	
+	sleep (10); //TODO: FIXME WITH A SMART SLEEP TO AVOID SYNC PROBLEMS
 	if(lsb_init(argv[0]) < 0) 
 		xdie("lsb_init failed");
 	
-	while((cc = getopt(argc, argv, "rasdpu:P")) != EOF) {
+	jaff = 0;
+	while((cc = getopt(argc, argv, "rasdpflu:P")) != EOF) {
 		switch(cc) {
 			case 'r':
 				jopts |= RUN_JOB;
@@ -41,6 +45,12 @@ int main(int argc, char **argv) {
 			case 'p':
 				jopts |= PEND_JOB;
 				break;
+			case 'f':
+                                jaff = 1;
+                                break;
+			case 'l':
+				jlong = 1;
+				break;	
 			case 'u':
 				if(!optarg)
 					xdie(USAGE);
@@ -126,11 +136,12 @@ void print_single_job(struct jobInfoEnt *job) {
 	double cpu_time;  /* CPU time in seconds       */
 	double sys_time;  /* System time in seconds    */
 	time_t wait_time; /* Time idle in queue in sec */
-	time_t rq_mem;       /* Requested RAM in MB       */
+	int rq_mem;       /* Requested RAM in MB       */
+	int rq_scr;       /* Requested Scratch in MB   */
 	double muti;      /* Memory Utilization        */
 	double peff;      /* CPU Eff.                  */
 	double sysp;      /* SYS time wasted           */
-	
+	int has_aff;       /* flag to check for afinity */
 	
 	/* Calculate some handy values
 	** cpu_time and co will be nonsense if the job didn't start yet
@@ -140,6 +151,10 @@ void print_single_job(struct jobInfoEnt *job) {
 	cpu_time  = (double) ( (double)job->runRusage.utime + (double)job->runRusage.stime );
 	sys_time  = job->runRusage.stime;
 	rq_mem    = get_rr_mem(job->submit.resReq);
+	rq_scr    = get_rr_scratch(job->submit.resReq);
+
+	/*Parsing Affinity requirement - if requested or supported*/
+        has_aff = has_affinity(job->submit.resReq);
 
 	/* if in parseable mode: notify printer about current jobid */
 	pr_set_prefix( LSB_ARRAY_JOBID(job->jobId) );
@@ -165,7 +180,7 @@ void print_single_job(struct jobInfoEnt *job) {
 	}
 	printf("\n");
 	
-	if( HAS_STATS(job) ) {
+	if( HAS_STATS(job) && job->status != JOB_STAT_PEND ) {
 		pr_lhand("Running on node"); print_exec_hosts(job);
 	}
 	
@@ -195,11 +210,33 @@ void print_single_job(struct jobInfoEnt *job) {
 		pr_duration("Requested runtime", job->submit.rLimits[LSF_RLIMIT_RUN]);
 	
 	/* print memory per core and total (if core > 1) */
-	pr_lhand("Requested memory");  printf("%d MB per core", rq_mem);
-	if(job->submit.numProcessors > 1)
-		printf(", %d MB total", rq_mem * job->submit.numProcessors);
+        /* Check if memory has been requested before printing*/
+        if(rq_mem > 0){	
+		pr_lhand("Requested memory");  printf("%d MB per core", rq_mem);
+	 	if(job->submit.numProcessors > 1)                                   
+        		printf(", %d MB total", rq_mem * job->submit.numProcessors);}
+	else{
+		pr_lhand("Requested memory");  printf("not specified");
+	}
+	
 	printf("\n");
 	
+	/* print scratch per core and total (if core > 1) */
+        /* Check if scratch has been requested before printing*/
+        if(rq_scr > 0){
+                pr_lhand("Requested scratch");  printf("%d MB per core", rq_mem);
+ 		if(job->submit.numProcessors > 1)                                          
+        	         printf(", %d MB total", rq_scr * job->submit.numProcessors); }
+	 else{
+                pr_lhand("Requested scratch");  printf("not specified");
+        }
+	
+        /*only if affinity is supported or requested*/
+ 	if(has_aff && jaff){
+        	printf("\n");
+		pr_lhand("Affinity"); print_affinity(job->submit.resReq); }
+	
+	printf("\n");
 	pr_stn("Dependency", job->submit.dependCond,64);
 	
 	
@@ -225,7 +262,7 @@ void print_single_job(struct jobInfoEnt *job) {
 		/* This information is only available it the job ever entered into RUN state */
 		peff = (wc_time > 0 ? (cpu_time / (double)(job->submit.numProcessors * wc_time ))*100               : 0);
 		sysp = (wc_time > 0 ? (sys_time / (double)(job->submit.numProcessors * wc_time ))*100               : 0);
-		muti = (rq_mem  > 0 ? (job->runRusage.swap/1024 / (double)(job->submit.numProcessors * rq_mem))*100 : 0);
+		muti = (rq_mem  > 0 ? (job->runRusage.mem / (double)(job->submit.numProcessors * rq_mem))*100 : 0);
 		pr_fancy("Resource usage");
 		pr_ts("Updated at", job->jRusageUpdateTime);
 		pr_duration("Wall-clock", wc_time);
@@ -233,8 +270,73 @@ void print_single_job(struct jobInfoEnt *job) {
 		pr_duration("Total CPU time", cpu_time);
 		pr_prct("CPU utilization", peff);
 		pr_prct("Sys/Kernel time", sysp);
-		pr_lhand("Total Memory"); printf("%d MB\n", job->runRusage.swap/1024);
-		pr_prct("Memory utilization", muti);
+		pr_lhand("Total Memory"); printf("%d MB\n", job->runRusage.mem > 0 ? job->runRusage.mem : 0);
+		pr_prct("Memory utilization", muti > 0 ? muti : 0);
+		
+		if ( jlong ){ 
+			int i;
+			char host[6];		
+	
+			pr_fancy("Total Memory per Host");
+			for ( i = 0 ; i < job->numhRusages; i++) {
+				strcpy(host,job->hostRusage[i].name);
+				strcat(host,"\0");
+				pr_lhand(host); printf("%d MB\n", job->hostRusage[i].mem);
+			}
+		}
+
+		if(has_aff && jaff){ 
+			struct affinityHostInfo *hostAffinity;
+			 int numHost= job->numhostAffinity;     
+
+			pr_fancy("Affinity per Host");	
+			if ( numHost == 0 )
+				 printf("No affinity resource for this job!");
+			else
+			{
+				int i;
+				for (i = 0; i < numHost; i++)
+				{
+					hostAffinity = &job->hostAffinity[i]; 
+					printf("Host %s\n:", hostAffinity->hostname); 
+					switch ((PU_t) hostAffinity->taffinity->cpu_bind_level){ 
+					case PU_NUMA: 
+						printf("Task affinity by NUMA domain, used cores:\n");  
+						printf("%s\n",hostAffinity->taffinity->pu_list);
+					break;
+					case PU_SOCKET:
+						printf("Task affinity by socket, used cores:\n");
+						printf("%s\n",hostAffinity->taffinity->pu_list);
+					break;
+					case PU_CORE:
+						printf("Task affinity by core, used cores:\n");
+						printf("%s\n",hostAffinity->taffinity->pu_list);
+					break;
+					case PU_THREAD:
+						printf("Task affinity by NUMA domain, used threads:\n");
+						printf("%s\n",hostAffinity->taffinity->pu_list);
+					break;
+					default:
+						printf("Task affinity not defined!\n");
+					break; 
+					}
+					switch((memBindPolicy_t)hostAffinity->taffinity->mem_bind_policy) {
+					case MEMBIND_LOCALONLY:
+						printf("Memory affinity strategy is local, used memory nodes:\n");  
+						printf("%d",hostAffinity->taffinity->mem_node_id);
+					break;
+					case MEMBIND_LOCALPREFER:
+						printf("Memory affinity strategy is prefer, used memory nodes:\n");
+						printf("%d",hostAffinity->taffinity->mem_node_id);
+					break;
+					case MEMBIND_UNDEFINED: 
+					default:
+						printf("Memory affinity not deffined!");
+					break;	
+					} 					
+				}
+			}		
+		}
 	}
 
 }
@@ -284,3 +386,18 @@ int parse_jobidx(char *str) {
 	return rv;
 }
 
+/*Print CPU affinity list for each host of the job*/
+void print_affinity(char *r_affinity)
+{
+	char affinity[MAXAFFNITYLEN];
+
+        if( (strstr(r_affinity,"core") != NULL) ||
+	    (strstr(r_affinity,"thread") != NULL))
+                strcpy(affinity,"cpu");
+
+	if(strstr(r_affinity,"membind") != NULL)
+ 	        strcat(affinity," and memory\0");
+
+	printf("%s ", affinity);		
+	
+}

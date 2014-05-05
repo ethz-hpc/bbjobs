@@ -3,6 +3,8 @@
 
 #include "printer.h"
 
+#define MAXAFFNITYLEN 16
+
 /* Returns TRUE if jobInfoEnt was ever running
 ** This is not the same as IS_START as it will also
 ** Return TRUE for DONE or killed jobs
@@ -14,6 +16,7 @@ void xdie(char *msg);
 void print_single_job(struct jobInfoEnt *job);
 void print_exec_hosts(struct jobInfoEnt *job);
 
+void print_affinity(char *rr);
 
 int get_jobinfo(LS_LONG_INT jobid, int jobidx, int jobopts, char *jobuser);
 

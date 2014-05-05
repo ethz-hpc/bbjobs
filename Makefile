@@ -1,5 +1,7 @@
 CC := gcc
 
+all: clean bbjobs install
+
 bbjobs: bbjobs.o printer.o lsb_strings.o
 	$(CC) -L${LSF_LIBDIR} -o bbjobs bbjobs.o printer.o lsb_strings.o -llsf -lbat -lnsl -lm
 
@@ -14,3 +16,6 @@ lsb_strings.o: lsb_strings.c lsb_strings.h
 
 clean:
 	rm -f *.o bbjobs
+
+install:
+	cp bbjobs ${LSF_BINDIR}
