@@ -8,6 +8,9 @@
 
 #define USAGE "rinfo [-u username -r -a -s -d -p -f -l -P] [ JOBID1 ... ]"
 
+extern void add_pair2submit_ext();
+
+
 int jaff,jlong;
 
 void xdie(char *msg) {
@@ -22,8 +25,8 @@ int main(int argc, char **argv) {
 	int jopts = 0;
 	int jobidx;
 	char *juser = NULL;
-	
-	sleep (10); //TODO: FIXME WITH A SMART SLEEP TO AVOID SYNC PROBLEMS
+
+	sleep (5); //TODO: FIXME WITH A SMART SLEEP TO AVOID SYNC PROBLEMS
 	if(lsb_init(argv[0]) < 0) 
 		xdie("lsb_init failed");
 	
@@ -63,8 +66,7 @@ int main(int argc, char **argv) {
 				xdie(USAGE);
 		}
 	}
-	
-	
+
 	if(juser == NULL) /* use $LOGNAME if user did not specify any username */
 		asprintf(&juser, "%s", (getenv("LOGNAME") ? getenv("LOGNAME") : "INVALID") );
 	
@@ -154,7 +156,7 @@ void print_single_job(struct jobInfoEnt *job) {
 	rq_scr    = get_rr_scratch(job->submit.resReq);
 
 	/*Parsing Affinity requirement - if requested or supported*/
-        has_aff = has_affinity(job->submit.resReq);
+        has_aff = has_affinity(job->effectiveResReq);
 
 	/* if in parseable mode: notify printer about current jobid */
 	pr_set_prefix( LSB_ARRAY_JOBID(job->jobId) );
@@ -234,7 +236,7 @@ void print_single_job(struct jobInfoEnt *job) {
         /*only if affinity is supported or requested*/
  	if(has_aff && jaff){
         	printf("\n");
-		pr_lhand("Affinity"); print_affinity(job->submit.resReq); }
+		pr_lhand("Affinity"); print_affinity(job->effectiveResReq); }
 	
 	printf("\n");
 	pr_stn("Dependency", job->submit.dependCond,64);
@@ -276,45 +278,70 @@ void print_single_job(struct jobInfoEnt *job) {
 		if ( jlong ){ 
 			int i;
 			char host[6];		
-	
-			pr_fancy("Total Memory per Host");
+			
+			if ( job->numhRusages > 1 )	
+				pr_fancy("Total Memory per Host");
 			for ( i = 0 ; i < job->numhRusages; i++) {
 				strcpy(host,job->hostRusage[i].name);
 				strcat(host,"\0");
 				pr_lhand(host); printf("%d MB\n", job->hostRusage[i].mem);
 			}
-		}
+		
+			struct jobInfoEnt *job_aff;
+			struct jobInfoReq  req;
+			struct jobInfoHeadExt *jInfoHExt = NULL;
+			int more;
 
-		if(has_aff && jaff){ 
+			memset(&req, 0, sizeof(struct jobInfoReq));  
+			add_pair2submit_ext(&req.submitExt, JDATA_EXT_AFFINITYINFO, "affinity");
+			req.userName=malloc(sizeof(job->user));  
+			strcpy(req.userName,job->user);
+			req.jobId=job->jobId;
+
+			jInfoHExt = lsb_openjobinfo_req(&req);			
+			job_aff = lsb_readjobinfo_cond(&more, jInfoHExt);
+                        		 
 			struct affinityHostInfo *hostAffinity;
-			 int numHost= job->numhostAffinity;     
+			int numHost= job_aff->numhostAffinity;     
 
 			pr_fancy("Affinity per Host");	
 			if ( numHost == 0 )
-				 printf("No affinity resource for this job!");
+				 printf("No affinity resource for this job!\n");
 			else
 			{
 				int i;
 				for (i = 0; i < numHost; i++)
 				{
-					hostAffinity = &job->hostAffinity[i]; 
-					printf("Host %s\n:", hostAffinity->hostname); 
+					hostAffinity = &job_aff->hostAffinity[i]; 
+					pr_lhand("Host"); printf("%s\n",hostAffinity->hostname); 
 					switch ((PU_t) hostAffinity->taffinity->cpu_bind_level){ 
 					case PU_NUMA: 
-						printf("Task affinity by NUMA domain, used cores:\n");  
-						printf("%s\n",hostAffinity->taffinity->pu_list);
+						pr_lhand("Task affinity");printf("by NUMA domain\n"); 
+						if ( hostAffinity->num_task == NUM_PROC){ 
+						  pr_lhand("Cores"); printf("all\n");}
+						else{	
+						  pr_lhand("Cores"); printf("%s\n",hostAffinity->taffinity->pu_list);}
 					break;
 					case PU_SOCKET:
-						printf("Task affinity by socket, used cores:\n");
-						printf("%s\n",hostAffinity->taffinity->pu_list);
+						pr_lhand("Task affinity");printf("by socket\n");
+						if ( hostAffinity->num_task == NUM_PROC){ 
+						  pr_lhand("Cores"); printf("all\n"); }
+						else{	
+						  pr_lhand("Cores"); printf("%s\n",hostAffinity->taffinity->pu_list);}
 					break;
 					case PU_CORE:
-						printf("Task affinity by core, used cores:\n");
-						printf("%s\n",hostAffinity->taffinity->pu_list);
+						pr_lhand("Task affinity");printf("by core\n");
+						if ( hostAffinity->num_task == NUM_PROC){ 
+						 pr_lhand("Cores"); printf("all\n");  }
+						else{
+						 pr_lhand("Cores");printf("%s\n",hostAffinity->taffinity->pu_list);}
 					break;
 					case PU_THREAD:
-						printf("Task affinity by NUMA domain, used threads:\n");
-						printf("%s\n",hostAffinity->taffinity->pu_list);
+						pr_lhand("Task affinity");printf("by NUMA domain\n");
+						if ( hostAffinity->num_task == NUM_PROC){
+						 pr_lhand("Threads"); printf("all\n");}    
+						else{
+						 pr_lhand("Threads");printf("%s\n",hostAffinity->taffinity->pu_list);}
 					break;
 					default:
 						printf("Task affinity not defined!\n");
@@ -322,12 +349,12 @@ void print_single_job(struct jobInfoEnt *job) {
 					}
 					switch((memBindPolicy_t)hostAffinity->taffinity->mem_bind_policy) {
 					case MEMBIND_LOCALONLY:
-						printf("Memory affinity strategy is local, used memory nodes:\n");  
-						printf("%d",hostAffinity->taffinity->mem_node_id);
+						pr_lhand("Memory affinity"); printf("local\n");  
+						pr_lhand("Memory nodes");printf("%d\n",hostAffinity->taffinity->mem_node_id);
 					break;
 					case MEMBIND_LOCALPREFER:
-						printf("Memory affinity strategy is prefer, used memory nodes:\n");
-						printf("%d",hostAffinity->taffinity->mem_node_id);
+						pr_lhand("Memory affinity"); printf("preferred\n");
+						pr_lhand("Memory nodes");printf("%d\n",hostAffinity->taffinity->mem_node_id);
 					break;
 					case MEMBIND_UNDEFINED: 
 					default:

@@ -10,6 +10,7 @@
 ** Return TRUE for DONE or killed jobs
 */
 #define HAS_STATS(x) ( (x)->startTime != 0 && (x)->jRusageUpdateTime != 0)
+#define NUM_PROC 24 //TODO: FIND A WAY TO GET THIS ONLINE TIME
 
 void xdie(char *msg);
 
